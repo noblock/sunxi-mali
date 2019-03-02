@@ -1,5 +1,29 @@
 --- r5p0/src/devicedrv/mali/linux/mali_kernel_linux.c.orig	2014-11-11 07:57:22.000000000 +0100
 +++ r5p0/src/devicedrv/mali/linux/mali_kernel_linux.c	2018-12-02 20:36:49.000000000 +0100
+@@ -270,11 +277,13 @@ int mali_platform_device_register(void)
+ 	dev->coherent_dma_mask = DMA_BIT_MASK(32);
+ 	dev->bus = &platform_bus_type;
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 0)
+ 	ret = of_reserved_mem_device_init(&mali->dev->dev);
+ 	if (ret && ret != -ENODEV) {
+ 		pr_err("Couldn't claim our reserved memory region\n");
+ 		goto err_free_mem_region;
+ 	}
++#endif
+ 
+ 	if ((irq_pp3 >= 0) && (irq_ppmmu3 >= 0))
+ 	        mali_res = mali_create_mp4_resources(res.start,
+@@ -338,7 +350,9 @@ int mali_platform_device_register(void)
+ 	return 0;
+ 
+ err_free_mem_region:
++#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 0)
+ 	of_reserved_mem_device_release(dev);
++#endif
+ 	platform_device_put(mali->dev);
+ err_put_reset:
+ 	if (!IS_ERR_OR_NULL(mali->reset)) {
 @@ -364,7 +364,7 @@
  	int err = 0;
  
