@@ -84,7 +84,7 @@ do
 	    ;;
 	r)
 	    case $OPTARG in
-		r6p0 | r6p2 | r5p0 | r7p0 | r9p0)
+		r6p0 | r6p2 | r5p0 | r7p0 | r8p1 | r9p0)
 		    RELEASE=$OPTARG
 		    ;;
 		*)
