@@ -1,0 +1,263 @@
+From ef372742536d1bd363cc3194c9bd1d09aafb9168 Mon Sep 17 00:00:00 2001
+From: noblock <noblock@users.noreply.github.com>
+Date: Wed, 3 Apr 2019 20:28:17 +0200
+Subject: [PATCH] mali experimental h5 workaround
+
+Signed-off-by: noblock <noblock@users.noreply.github.com>
+---
+ src/devicedrv/mali/common/mali_scheduler.c | 192 +++++++++++++++++++++
+ src/devicedrv/mali/platform/sunxi/sunxi.c  |   7 +-
+ 2 files changed, 198 insertions(+), 1 deletion(-)
+
+diff --git a/src/devicedrv/mali/common/mali_scheduler.c b/src/devicedrv/mali/common/mali_scheduler.c
+index de54956..5562c07 100644
+--- a/src/devicedrv/mali/common/mali_scheduler.c
++++ b/src/devicedrv/mali/common/mali_scheduler.c
+@@ -21,6 +21,7 @@
+ #include <linux/wait.h>
+ #include <linux/sched.h>
+ #include "mali_pm_metrics.h"
++#include "mali_memory_virtual.h"
+ 
+ #if defined(CONFIG_DMA_SHARED_BUFFER)
+ #include "mali_memory_dma_buf.h"
+@@ -800,6 +801,190 @@ _mali_osk_errcode_t _mali_ukk_pp_start_job(void *ctx,
+ 	return ret;
+ }
+ 
++#if defined(CONFIG_ARM64) && defined(CONFIG_ARCH_SUNXI)
++
++struct malivma {
++	u32 mali_base;
++	u32 vma_size;
++	u64 vma_base;
++};
++
++extern int sunxi_h5workaround_enable;
++
++static u32 *wrk_malifindptrbymaddr(const u32 zone_addr, struct malivma *const mv, const size_t n, size_t *const count, int *const segment, struct mali_session_data *const session)
++{
++	int i;
++
++	if (*count)
++		if (mv[*segment].mali_base <= zone_addr && zone_addr < mv[*segment].mali_base + mv[*segment].vma_size)
++			return (u32 *)(zone_addr - mv[*segment].mali_base + mv[*segment].vma_base);
++
++	for (i = 0; i < *count; i++)
++		if (mv[i].mali_base <= zone_addr && zone_addr < mv[i].mali_base + mv[i].vma_size) {
++			*segment = i;
++			return (u32 *)(zone_addr - mv[i].mali_base + mv[i].vma_base);
++		}
++
++	{
++		struct mali_vma_node *mali_vma_node = mali_vma_offset_search(&session->allocation_mgr, zone_addr, 0);
++
++		if (likely(mali_vma_node)) {
++			mali_mem_allocation *mali_alloc = container_of(mali_vma_node, struct mali_mem_allocation, mali_vma_node);
++			u32 *ptr;
++
++			if (*count < n)	{
++				mv[*count].mali_base = mali_vma_node->vm_node.start;
++				mv[*count].vma_size = mali_vma_node->vm_node.size;
++				mv[*count].vma_base = mali_alloc->cpu_mapping.vma->vm_start;
++				ptr = (u32 *)(zone_addr - mv[*count].mali_base + mv[*count].vma_base);
++				*segment = *count;
++				(*count)++;
++				return ptr;
++			} else {
++				return NULL;
++			}
++		}
++	}
++
++	return NULL;
++}
++
++static inline int wrk_malicheckrange(const u32 *const ptr, const struct malivma *const mv, const int segment, const int margin, const int line)
++{
++	const int ret = !ptr || (u32 *)mv[segment].vma_base > ptr || ptr >= (u32 *)(mv[segment].vma_base + mv[segment].vma_size - margin);
++
++	if (ret)
++		pr_debug("warning: %s, ptr = %p (0x%016llx - 0x%016llx, 0x%08x, line = %d) failed...\n", __func__, ptr, mv[segment].vma_base, mv[segment].vma_base + mv[segment].vma_size - margin, mv[segment].vma_size, line);
++
++	return ret;
++}
++
++static int wrk_mali_h5_workaround(u32 *const dlbu_registers, u32 *const frame_registers, const u32 plbu_s, const u32 plbu_e, struct mali_session_data *const session)
++{
++	struct malivma mv[8];
++	int shmode = 0;
++	int segment = 0;
++	size_t count = 0;
++
++	if (0x20000001 == dlbu_registers[2] && 0x00000001 == frame_registers[20])
++		shmode = 1;
++	else if (0x20010002 == dlbu_registers[2] && 0x10010002 == frame_registers[20])
++		shmode = 2;
++
++	if (shmode) {
++		switch (shmode) {
++		case 1:
++			dlbu_registers[2] = 0x20010001;
++			frame_registers[20] = 0x10010001;
++			break;
++		case 2:
++			dlbu_registers[2] = 0x20020002;
++			frame_registers[20] = 0x20020002;
++			break;
++		}
++
++		{
++			u32 rsw_renderstate[512];
++			int rsw_num = 0;
++
++			if (plbu_s && plbu_s != plbu_e) {
++				const u32 *const pl_plbu_stop_ptr = wrk_malifindptrbymaddr(plbu_e, mv, sizeof(mv) / sizeof(*mv), &count, &segment, session);
++				u32 *pl_plbu_ptr = NULL;
++				u32 pl_plbu[2];
++				u32 pl_jump = plbu_s;
++				int tw = 0, th = 0;
++
++				if (wrk_malicheckrange(pl_plbu_stop_ptr, mv, segment, 0, __LINE__))
++					return -EFAULT;
++
++				do {
++					if (pl_jump) {
++						pl_plbu_ptr = wrk_malifindptrbymaddr(pl_jump, mv, sizeof(mv) / sizeof(*mv), &count, &segment, session);
++						pl_jump = 0;
++					}
++
++					if (wrk_malicheckrange(pl_plbu_ptr, mv, segment, sizeof(pl_plbu), __LINE__))
++						return -EFAULT;
++
++					if (copy_from_user(pl_plbu, pl_plbu_ptr, sizeof(pl_plbu)))
++						return -EFAULT;
++
++					switch (pl_plbu[1]) {
++					case 0x1000010c: // PLBU_CMD_BLOCK_STEP
++						if (shmode == 1 && 0x00000001 == pl_plbu[0])
++							pl_plbu[0] = 0x10010001;
++						else if (shmode == 2 && 0x10010002 == pl_plbu[0])
++							pl_plbu[0] = 0x20020002;
++
++						if (copy_to_user(pl_plbu_ptr, pl_plbu, sizeof(pl_plbu)))
++							return -EFAULT;
++						break;
++					case 0x10000109:
++						tw = (pl_plbu[0] >> 24) + 1;
++						th = ((pl_plbu[0] >> 8) & 0xffff) + 1;
++						break;
++					case 0xf0000000:
++						pl_jump = pl_plbu[0];
++						break;
++					default:
++						if ((pl_plbu[1] & 0xf0000000) == 0x80000000) {
++							if (rsw_num < (int)(sizeof(rsw_renderstate) / sizeof(*rsw_renderstate)))
++								rsw_renderstate[rsw_num++] = pl_plbu[0];
++							else
++								pr_debug("error: %s, rsw_num overflow...\n", __func__);
++						} else if ((pl_plbu[1] & 0xf8000000) == 0x28000000) {
++							if (tw && th) {
++								int w =  tw << (2 - shmode);
++								int h  = th << (2 - shmode);
++
++								w = (w + 7) & ~7;
++								h = (h + 7) & ~7;
++
++								{
++									int val = (w * h) / 16;
++
++									pl_plbu[1] = 0x28000000 | ((val - 1) & 0x07ffffff);
++								}
++							} else {
++								pr_err("warning: %s undefined state (0x%08x)...\n", __func__, pl_plbu[1]);
++							}
++
++							if (copy_to_user(pl_plbu_ptr, pl_plbu, sizeof(pl_plbu)))
++								return -EFAULT;
++						}
++						break;
++					}
++
++					pl_plbu_ptr += 2;
++				} while (pl_plbu_stop_ptr != pl_plbu_ptr);
++			}
++
++			{
++				int k;
++
++				for (k = 0; k < rsw_num; k++) {
++					u32 *rsw_ptr = wrk_malifindptrbymaddr(rsw_renderstate[k], mv, sizeof(mv) / sizeof(*mv), &count, &segment, session);
++					u32 aux0[1];
++
++					if (wrk_malicheckrange(rsw_ptr, mv, segment, 14 * sizeof(aux0), __LINE__))
++						return -EFAULT;
++
++					if (copy_from_user(aux0, rsw_ptr + 13, sizeof(aux0)))
++						return -EFAULT;
++
++					aux0[0] &= ~0x00001000;
++
++					if (copy_to_user(rsw_ptr + 13, aux0, sizeof(aux0)))
++						return -EFAULT;
++				}
++			}
++		}
++	}
++
++	return 0;
++}
++#endif
++
+ _mali_osk_errcode_t _mali_ukk_pp_and_gp_start_job(void *ctx,
+ 		_mali_uk_pp_and_gp_start_job_s *uargs)
+ {
+@@ -826,6 +1011,13 @@ _mali_osk_errcode_t _mali_ukk_pp_and_gp_start_job(void *ctx,
+ 	pp_args = (_mali_uk_pp_start_job_s __user *)(uintptr_t)kargs.pp_args;
+ 	gp_args = (_mali_uk_gp_start_job_s __user *)(uintptr_t)kargs.gp_args;
+ 
++#if defined(CONFIG_ARM64) && defined(CONFIG_ARCH_SUNXI)
++	if (sunxi_h5workaround_enable) {
++		if (wrk_mali_h5_workaround(pp_args->dlbu_registers, pp_args->frame_registers, gp_args->frame_registers[2], gp_args->frame_registers[3], session))
++			pr_debug("warning: wrk_mali_h5_workaround failed...\n");
++	}
++#endif
++
+ 	pp_job = mali_pp_job_create(session, pp_args,
+ 				    mali_scheduler_get_new_id());
+ 	if (NULL == pp_job) {
+diff --git a/src/devicedrv/mali/platform/sunxi/sunxi.c b/src/devicedrv/mali/platform/sunxi/sunxi.c
+index 42925a4..2b295be 100644
+--- a/src/devicedrv/mali/platform/sunxi/sunxi.c
++++ b/src/devicedrv/mali/platform/sunxi/sunxi.c
+@@ -194,6 +194,8 @@ static const struct of_device_id mali_dt_ids[] = {
+ };
+ MODULE_DEVICE_TABLE(of, mali_dt_ids);
+ 
++int sunxi_h5workaround_enable;
++
+ int mali_platform_device_register(void)
+ {
+ 	struct mali_gpu_device_data mali_gpu_data = {
+@@ -349,7 +351,9 @@ int mali_platform_device_register(void)
+ 	if (of_device_is_compatible(np, "allwinner,sun50i-h5-mali") &&
+ 		(irq_pp >= 0) &&
+ 		(irq_pp2 >= 0) && (irq_ppmmu2 >= 0) &&
+-		(irq_pp3 >= 0) && (irq_ppmmu3 >= 0))
++		(irq_pp3 >= 0) && (irq_ppmmu3 >= 0)) {
++		sunxi_h5workaround_enable = 1;
++		pr_info("H5 workaround enabled");
+ 		mali_res = mali_create_mali450_mp4_resources_nopmu(res.start,
+ 								irq_gp, irq_gpmmu,
+ 								irq_pp,
+@@ -358,6 +362,7 @@ int mali_platform_device_register(void)
+ 								irq_pp2, irq_ppmmu2,
+ 								irq_pp3, irq_ppmmu3,
+ 								&len);
++	}
+ #ifdef CONFIG_ARCH_MESON
+ 	else if ((of_device_is_compatible(np, "amlogic,meson-gxbb-mali") ||
+ 			of_device_is_compatible(np, "amlogic,meson-gxl-mali")) &&
+-- 
+2.20.1
+

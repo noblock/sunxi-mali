@@ -10,3 +10,4 @@ r6p2/0016-mali-support-building-against-4.16.patch
 0019-mali-support-building-against-5.0.patch
 0090-mali-fix-sunxi-h5-platform.patch
 0091-mali-add-meson-gxbb-gxl.patch
+r9p0/0092-mali-experimental-h5-workaround.patch
