@@ -16,3 +16,4 @@ r6p0/0013-mali-support-building-against-4.15.patch
 0020-mali-support-building-against-4.17.patch
 0090-mali-fix-sunxi-h5-platform.patch
 0091-mali-add-meson-gxbb-gxl.patch
+0021-mali-support-building-against-5.3.patch
