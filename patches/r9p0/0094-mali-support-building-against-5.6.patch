@@ -1,0 +1,99 @@
+From f03bf1ff3472a8e10bab0b21b0579fc0a921cfa6 Mon Sep 17 00:00:00 2001
+From: noblock <noblock@users.noreply.github.com>
+Date: Fri, 24 Apr 2020 10:26:38 +0200
+Subject: [PATCH] mali-support-building-against-5.6
+
+---
+ src/devicedrv/mali/linux/mali_memory_cow.c    |  2 +-
+ .../mali/linux/mali_osk_low_level_mem.c       |  2 +-
+ src/devicedrv/mali/linux/mali_osk_time.c      | 48 +++++++++++++++++++
+ 3 files changed, 50 insertions(+), 2 deletions(-)
+
+diff --git a/src/devicedrv/mali/linux/mali_memory_cow.c b/src/devicedrv/mali/linux/mali_memory_cow.c
+index f1d44fe..d10818d 100644
+--- a/src/devicedrv/mali/linux/mali_memory_cow.c
++++ b/src/devicedrv/mali/linux/mali_memory_cow.c
+@@ -683,7 +683,7 @@ void _mali_mem_cow_copy_page(mali_page_node *src_node, mali_page_node *dst_node)
+ 		/*
+ 		* use ioremap to map src for BLOCK memory
+ 		*/
+-		src = ioremap_nocache(_mali_page_node_get_dma_addr(src_node), _MALI_OSK_MALI_PAGE_SIZE);
++		src = ioremap(_mali_page_node_get_dma_addr(src_node), _MALI_OSK_MALI_PAGE_SIZE);
+ 		memcpy(dst, src , _MALI_OSK_MALI_PAGE_SIZE);
+ 		iounmap(src);
+ 	}
+diff --git a/src/devicedrv/mali/linux/mali_osk_low_level_mem.c b/src/devicedrv/mali/linux/mali_osk_low_level_mem.c
+index 84f93d9..2081af4 100644
+--- a/src/devicedrv/mali/linux/mali_osk_low_level_mem.c
++++ b/src/devicedrv/mali/linux/mali_osk_low_level_mem.c
+@@ -33,7 +33,7 @@ void _mali_osk_write_mem_barrier(void)
+ 
+ mali_io_address _mali_osk_mem_mapioregion(uintptr_t phys, u32 size, const char *description)
+ {
+-	return (mali_io_address)ioremap_nocache(phys, size);
++	return (mali_io_address)ioremap(phys, size);
+ }
+ 
+ void _mali_osk_mem_unmapioregion(uintptr_t phys, u32 size, mali_io_address virt)
+diff --git a/src/devicedrv/mali/linux/mali_osk_time.c b/src/devicedrv/mali/linux/mali_osk_time.c
+index 4c0f482..ae8b4f6 100644
+--- a/src/devicedrv/mali/linux/mali_osk_time.c
++++ b/src/devicedrv/mali/linux/mali_osk_time.c
+@@ -18,6 +18,54 @@
+ #include <linux/time.h>
+ #include <asm/delay.h>
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
++struct timespec {
++  __kernel_old_time_t     tv_sec;         /* seconds */
++  long                    tv_nsec;        /* nanoseconds */
++};
++#if __BITS_PER_LONG == 64
++/* timespec64 is defined as timespec here */
++static inline struct timespec timespec64_to_timespec(const struct timespec64 ts64)
++{
++  return *(const struct timespec *)&ts64;
++}
++
++static inline struct timespec64 timespec_to_timespec64(const struct timespec ts)
++{
++  return *(const struct timespec64 *)&ts;
++}
++#else
++static inline struct timespec timespec64_to_timespec(const struct timespec64 ts64)
++{
++  struct timespec ret;
++
++  ret.tv_sec = ts64.tv_sec;
++  ret.tv_nsec = ts64.tv_nsec;
++  return ret;
++}
++
++static inline struct timespec64 timespec_to_timespec64(const struct timespec ts)
++{
++  struct timespec64 ret;
++
++  ret.tv_sec = ts.tv_sec;
++  ret.tv_nsec = ts.tv_nsec;
++  return ret;
++}
++#endif
++static inline s64 timespec_to_ns(const struct timespec *ts)
++{
++  return ((s64) ts->tv_sec * NSEC_PER_SEC) + ts->tv_nsec;
++}
++static inline void getnstimeofday(struct timespec *ts)
++{
++  struct timespec64 ts64;
++
++  ktime_get_real_ts64(&ts64);
++  *ts = timespec64_to_timespec(ts64);
++}
++#endif /*LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)*/
++
+ mali_bool _mali_osk_time_after_eq(unsigned long ticka, unsigned long tickb)
+ {
+ 	return time_after_eq(ticka, tickb) ?
+-- 
+2.26.2
+
