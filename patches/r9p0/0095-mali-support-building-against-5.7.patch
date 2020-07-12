@@ -1,0 +1,27 @@
+From a51685b741b4c450203364e4c84c671be38cfde0 Mon Sep 17 00:00:00 2001
+From: noblock <noblock@users.noreply.github.com>
+Date: Sun, 12 Jul 2020 14:00:21 +0200
+Subject: [PATCH] mali-support-building-against-5.7
+
+---
+ src/devicedrv/mali/linux/mali_memory_dma_buf.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/devicedrv/mali/linux/mali_memory_dma_buf.c b/src/devicedrv/mali/linux/mali_memory_dma_buf.c
+index 905cd8b..c5b2a77 100644
+--- a/src/devicedrv/mali/linux/mali_memory_dma_buf.c
++++ b/src/devicedrv/mali/linux/mali_memory_dma_buf.c
+@@ -34,6 +34,10 @@
+ #include "mali_memory_virtual.h"
+ #include "mali_pp_job.h"
+ 
++#ifndef PTR_RET
++#define PTR_RET(p) PTR_ERR_OR_ZERO(p)
++#endif
++
+ /*
+  * Map DMA buf attachment \a mem into \a session at virtual address \a virt.
+  */
+-- 
+2.27.0
+
