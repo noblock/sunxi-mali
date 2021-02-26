@@ -14,4 +14,6 @@ r6p2/0016-mali-support-building-against-4.16.patch
 r9p0/0092-mali-experimental-h5-workaround-v3.patch
 0021-mali-support-building-against-5.3.patch
 r9p0/0094-mali-support-building-against-5.6.patch
-r9p0/0095-mali-support-building-against-5.7.patch
+0023-mali-support-building-against-5.7.patch
+0024-mali-support-building-against-5.9.patch
+0025-mali-support-building-against-5.10.patch
